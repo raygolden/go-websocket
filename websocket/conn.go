@@ -27,7 +27,6 @@ import (
 	"errors"
 	"io"
 	"io/ioutil"
-	"log"
 	"net"
 	"strconv"
 	"sync"
@@ -323,7 +322,6 @@ func (c *Conn) advanceFrame() (int, error) {
 	// 1. Skip remainder of previous frame.
 
 	if c.readLength > 0 {
-		log.Println("SKIPING")
 		if _, err := io.CopyN(ioutil.Discard, c.br, c.readLength); err != nil {
 			return -1, err
 		}
@@ -435,7 +433,6 @@ func (c *Conn) advanceFrame() (int, error) {
 					string(payload[2:]))
 			}
 		}
-		log.Println("CLOSE", c.readErr)
 	}
 
 	return opCode, nil

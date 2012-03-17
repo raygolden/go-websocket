@@ -20,6 +20,15 @@ import (
 	"strings"
 )
 
+func inListHeader(header web.Header, key string, value string) bool {
+	for _, v := range header.GetList(key) {
+		if strings.EqualFold(value, v) {
+			return true
+		}
+	}
+	return false
+}
+
 // Upgrade upgrades the HTTP connection to the WebSocket protocol. 
 func Upgrade(resp web.Response, req *web.Request, subProtocol string) (*Conn, error) {
 
@@ -33,20 +42,13 @@ func Upgrade(resp web.Response, req *web.Request, subProtocol string) (*Conn, er
 			Reason: errors.New("websocket: version != 13")}
 	}
 
-	if !strings.EqualFold("upgrade", req.Header.Get(web.HeaderConnection)) {
+	if !inListHeader(req.Header, web.HeaderConnection, "upgrade") {
 		return nil, &web.Error{
 			Status: web.StatusBadRequest,
 			Reason: errors.New("websocket: connection header != upgrade")}
 	}
 
-	upgrade := false
-	for _, v := range req.Header.GetList(web.HeaderUpgrade) {
-		if strings.EqualFold("websocket", v) {
-			upgrade = true
-			break
-		}
-	}
-	if !upgrade {
+	if !inListHeader(req.Header, web.HeaderUpgrade, "websocket") {
 		return nil, &web.Error{
 			Status: web.StatusBadRequest,
 			Reason: errors.New("websocket: upgrade != websocket")}
