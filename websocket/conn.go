@@ -12,24 +12,24 @@
 // License for the specific language governing permissions and limitations
 // under the License.
 
-// Package websocket implements the WebSocket protocol.
+// Package websocket implements the WebSocket protocol defined in RFC 6455.
 //
-// The package is a work in progress. The API is not frozen. The documentation
-// is incomplete. The tests are thin.
+// The websocket package passes UTF-8 text to and from the network without
+// validation. If the appliation receives invalid UTF-8 text, the appliation
+// should close the connection with close code CloseInvalidFramePayloadData.
 package websocket
 
 import (
 	"bufio"
 	"bytes"
-	"crypto/sha1"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"net"
 	"strconv"
-	"sync"
+	"time"
 )
 
 // Close codes defined in RFC 6455, section 11.7.
@@ -58,107 +58,101 @@ const (
 	OpPong         = 10
 )
 
-var (
-	ErrCloseSent = errors.New("websocket: close sent")
-)
+var ErrCloseSent = errors.New("websocket: close sent")
 
 var (
-	keyGUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+	errBadWriteOpCode      = errors.New("websocket: bad write opcode")
+	errWriteTimeout        = errors.New("websocket: write timeout")
+	errWriteClosed         = errors.New("websocket: write closed")
+	errInvalidControlFrame = errors.New("websocket: invalid control frame")
 )
 
 const (
 	maxFrameHeaderSize         = 2 + 8 + 4 // Fixed header + length + mask
 	maxControlFramePayloadSize = 125
 	finalBit                   = 1 << 7
+	maskBit                    = 1 << 7
+	writeWait                  = time.Second
 )
 
+func maskBytes(key [4]byte, pos int, b []byte) int {
+	for i := range b {
+		b[i] ^= key[pos&3]
+		pos += 1
+	}
+	return pos & 3
+}
+
+func newMaskKey() [4]byte {
+	n := rand.Uint32()
+	return [4]byte{byte(n), byte(n >> 8), byte(n >> 16), byte(n >> 32)}
+}
+
+// Conn represents a WebSocket connection.
 type Conn struct {
-	conn net.Conn
+	conn     net.Conn
+	isServer bool
 
 	// Write fields
-	mu        sync.Mutex // protects write to the connection and closeSent
-	closeSent bool       // true if close frame sent
+	mu        chan struct{} // used as mutex to protect write to conn and closeSent
+	closeSent bool          // true if close message was sent
 
 	// Message writer fields.
-	writeBuf    []byte // frame is constructed in this buffer.
-	writePos    int    // end of data in writeBuf.
-	writeOpCode int    // op code for the current frame.
-	writeSeq    int    // incremented to invalidate message writers.
+	writeBuf      []byte // frame is constructed in this buffer.
+	writePos      int    // end of data in writeBuf.
+	writeOpCode   int    // op code for the current frame.
+	writeSeq      int    // incremented to invalidate message writers.
+	writeDeadline time.Time
 
 	// Read fields
-	readErr    error
-	br         *bufio.Reader
-	readLength int64 // bytes remaining in current frame.
-	readFinal  bool  // true the current message has more frames.
-	readSeq    int   // incremented to invalidate message readers.
-	savedPong  []byte
-
-	// Masking
-	maskPos int
-	maskKey [4]byte
+	readErr     error
+	br          *bufio.Reader
+	readLength  int64 // bytes remaining in current frame.
+	readFinal   bool  // true the current message has more frames.
+	readSeq     int   // incremented to invalidate message readers.
+	readMaskPos int
+	readMaskKey [4]byte
+	savedPong   []byte
 }
 
-func NewServerConn(conn net.Conn, br *bufio.Reader, writeBufSize int, subProtocol string, key string) (*Conn, error) {
-
-	h := sha1.New()
-	h.Write([]byte(key))
-	h.Write(keyGUID)
-	accpektKey := base64.StdEncoding.EncodeToString(h.Sum(nil))
-
-	var buf bytes.Buffer
-	buf.WriteString("HTTP/1.1 101 Switching Protocols")
-	buf.WriteString("\r\nUpgrade: websocket")
-	buf.WriteString("\r\nConnection: Upgrade")
-	buf.WriteString("\r\nSec-WebSocket-Accept: ")
-	buf.WriteString(accpektKey)
-	if subProtocol != "" {
-		buf.WriteString("\r\nSec-WebSocket-Protocol: ")
-		buf.WriteString(subProtocol)
-	}
-	buf.WriteString("\r\n\r\n")
-
-	_, err := conn.Write(buf.Bytes())
-	if err != nil {
-		return nil, err
-	}
-
+func newConn(conn net.Conn, isServer bool, readBufSize, writeBufSize int) *Conn {
 	return &Conn{
+		isServer:    isServer,
+		br:          bufio.NewReaderSize(conn, readBufSize),
 		conn:        conn,
-		writeBuf:    make([]byte, writeBufSize+maxFrameHeaderSize),
-		br:          br,
-		writePos:    maxFrameHeaderSize,
-		writeOpCode: -1,
+		mu:          make(chan struct{}, 1),
 		readFinal:   true,
-	}, nil
+		writeBuf:    make([]byte, writeBufSize+maxFrameHeaderSize),
+		writeOpCode: -1,
+		writePos:    maxFrameHeaderSize,
+	}
 }
 
+// Close closes the underlying network connection without sending or waiting for a close frame.
 func (c *Conn) Close() error {
 	return c.conn.Close()
 }
 
-func (c *Conn) maskBytes(b []byte) {
-	maskPos := c.maskPos
-	for i := range b {
-		b[i] ^= c.maskKey[maskPos&3]
-		maskPos += 1
-	}
-	c.maskPos = maskPos & 3
-}
-
 // Write methods
 
-func (c *Conn) write(opCode int, bufs ...[]byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *Conn) write(opCode int, deadline time.Time, bufs ...[]byte) error {
+	c.mu <- struct{}{}
+	defer func() { <-c.mu }()
+
 	if c.closeSent {
 		return ErrCloseSent
-	}
-	if opCode == OpClose {
+	} else if opCode == OpClose {
 		c.closeSent = true
 	}
+
+	c.conn.SetWriteDeadline(deadline)
 	for _, buf := range bufs {
 		if len(buf) > 0 {
-			_, err := c.conn.Write(buf)
+			n, err := c.conn.Write(buf)
+			if n != len(buf) {
+				// Close on partial write.
+				c.conn.Close()
+			}
 			if err != nil {
 				return err
 			}
@@ -167,15 +161,66 @@ func (c *Conn) write(opCode int, bufs ...[]byte) error {
 	return nil
 }
 
-func (c *Conn) SendClose(closeCode int, message string) error {
-	frame := make([]byte, 4+len(message))
-	frame[0] = finalBit | OpClose
-	frame[1] = byte(len(message) + 2)
-	binary.BigEndian.PutUint16(frame[2:], uint16(closeCode))
-	copy(frame[4:], message)
-	return c.write(OpClose, frame)
+// WriteControl writes a control message with the given deadline. 
+func (c *Conn) WriteControl(opCode int, data []byte, deadline time.Time) error {
+	if opCode != OpClose && opCode != OpPing && opCode != OpPong {
+		return errBadWriteOpCode
+	}
+	if len(data) > maxControlFramePayloadSize {
+		return errInvalidControlFrame
+	}
+
+	buf := make([]byte, 0, maxFrameHeaderSize+maxControlFramePayloadSize)
+	buf = append(buf, finalBit|byte(opCode), byte(len(data)))
+
+	if c.isServer {
+		buf = append(buf, data...)
+	} else {
+		key := newMaskKey()
+		buf = append(buf, key[:]...)
+		buf = append(buf, data...)
+		maskBytes(key, 0, buf[6:])
+	}
+
+	d := time.Hour * 1000
+	if !deadline.IsZero() {
+		d = deadline.Sub(time.Now())
+		if d < 0 {
+			return errWriteTimeout
+		}
+	}
+
+	timer := time.NewTimer(d)
+	select {
+	case c.mu <- struct{}{}:
+		timer.Stop()
+	case <-timer.C:
+		return errWriteTimeout
+	}
+	defer func() { <-c.mu }()
+
+	if c.closeSent {
+		return ErrCloseSent
+	} else if opCode == OpClose {
+		c.closeSent = true
+	}
+
+	c.conn.SetWriteDeadline(deadline)
+	n, err := c.conn.Write(buf)
+	if n != 0 && n != len(buf) {
+		c.conn.Close()
+	}
+	return err
 }
 
+// NextWriter returns a writer for the next message to send.  The allowed
+// opCodes are OpText, OpBinary, OpClose and OpPing. The writer's Close method
+// flushes the complete message to the network.
+//
+// There can be at most one open writer on a connection.NextWriter closes the
+// previous writer if the application has not already done so.
+//
+// TODO: Add comment about thread safety.
 func (c *Conn) NextWriter(opCode int) (io.WriteCloser, error) {
 	if c.writeOpCode != -1 {
 		if err := c.flushFrame(true, nil); err != nil {
@@ -183,11 +228,8 @@ func (c *Conn) NextWriter(opCode int) (io.WriteCloser, error) {
 		}
 	}
 
-	if opCode != OpText &&
-		opCode != OpBinary &&
-		opCode != OpClose &&
-		opCode != OpPing {
-		return nil, errors.New("websocket: bad opcode")
+	if opCode != OpText && opCode != OpBinary && opCode != OpClose && opCode != OpPing {
+		return nil, errBadWriteOpCode
 	}
 
 	c.writeOpCode = opCode
@@ -204,33 +246,53 @@ func (c *Conn) flushFrame(final bool, extra []byte) error {
 		c.writeSeq += 1
 		c.writeOpCode = -1
 		c.writePos = maxFrameHeaderSize
-		return errors.New("websocket: invalid control frame")
+		return errInvalidControlFrame
 	}
 
 	b0 := byte(c.writeOpCode)
 	if final {
 		b0 |= finalBit
 	}
+	b1 := byte(0)
+	if !c.isServer {
+		b1 |= maskBit
+	}
 
-	pos := 4
+	// Assume that the frame starts at beginning of c.writeBuf.
+	framePos := 0
+	if c.isServer {
+		// Adjust up if mask not included in the header.
+		framePos = 4
+	}
+
 	switch {
 	case length >= 65536:
-		c.writeBuf[pos] = b0
-		c.writeBuf[pos+1] = 127
-		binary.BigEndian.PutUint64(c.writeBuf[pos+2:], uint64(length))
+		c.writeBuf[framePos] = b0
+		c.writeBuf[framePos+1] = b1 | 127
+		binary.BigEndian.PutUint64(c.writeBuf[framePos+2:], uint64(length))
 	case length > 125:
-		pos += 6
-		c.writeBuf[pos] = b0
-		c.writeBuf[pos+1] = 126
-		binary.BigEndian.PutUint16(c.writeBuf[pos+2:], uint16(length))
+		framePos += 6
+		c.writeBuf[framePos] = b0
+		c.writeBuf[framePos+1] = b1 | 126
+		binary.BigEndian.PutUint16(c.writeBuf[framePos+2:], uint16(length))
 	default:
-		pos += 8
-		c.writeBuf[pos] = b0
-		c.writeBuf[pos+1] = byte(length)
+		framePos += 8
+		c.writeBuf[framePos] = b0
+		c.writeBuf[framePos+1] = b1 | byte(length)
+	}
+
+	if !c.isServer {
+		key := newMaskKey()
+		copy(c.writeBuf[maxFrameHeaderSize-4:], key[:])
+		maskBytes(key, 0, c.writeBuf[maxFrameHeaderSize:c.writePos])
+		if len(extra) > 0 {
+			// Writer should use buffer in client mode.
+			panic("unexpected flush data")
+		}
 	}
 
 	// Write the buffers to the connection.
-	err := c.write(c.writeOpCode, c.writeBuf[pos:c.writePos], extra)
+	err := c.write(c.writeOpCode, c.writeDeadline, c.writeBuf[framePos:c.writePos], extra)
 
 	// Setup for next frame.
 	c.writePos = maxFrameHeaderSize
@@ -263,10 +325,10 @@ func (w messageWriter) ncopy(max int) (int, error) {
 
 func (w messageWriter) Write(p []byte) (int, error) {
 	if w.c.writeSeq != w.seq {
-		return 0, errors.New("websocket: closed writer")
+		return 0, errWriteClosed
 	}
 
-	if len(p) > 2*len(w.c.writeBuf) {
+	if len(p) > 2*len(w.c.writeBuf) && w.c.isServer {
 		// Don't buffer large messages.
 		err := w.c.flushFrame(false, p)
 		if err != nil {
@@ -290,7 +352,7 @@ func (w messageWriter) Write(p []byte) (int, error) {
 
 func (w messageWriter) WriteString(p string) (int, error) {
 	if w.c.writeSeq != w.seq {
-		return 0, errors.New("websocket: closed writer")
+		return 0, errWriteClosed
 	}
 
 	nn := len(p)
@@ -308,14 +370,22 @@ func (w messageWriter) WriteString(p string) (int, error) {
 
 func (w messageWriter) Close() error {
 	if w.c.writeSeq != w.seq {
-		return errors.New("websocket: closed writer")
+		return errWriteClosed
 	}
 	return w.c.flushFrame(true, nil)
 }
 
-// Read methods
+// SetWriteDeadline sets the deadline for future calls to NextWriter and the
+// io.WriteCloser returned from NextWriter. If the deadline is reached, the
+// call will fail with a timeout instead of blocking. A zero value for t means
+// Write will not time out. Even if Write times out, it may return n > 0,
+// indicating that some of the data was successfully written.
+func (c *Conn) SetWriteDeadline(t time.Time) error {
+	c.writeDeadline = t
+	return nil
+}
 
-var closeFrame = []byte{finalBit | OpClose, 0}
+// Read methods
 
 func (c *Conn) advanceFrame() (int, error) {
 
@@ -337,11 +407,11 @@ func (c *Conn) advanceFrame() (int, error) {
 	final := b[0]&finalBit != 0
 	opCode := int(b[0] & 0xf)
 	reserved := int((b[0] >> 4) & 0x7)
-	mask := b[1]&(1<<7) != 0
+	mask := b[1]&maskBit != 0
 	c.readLength = int64(b[1] & 0x7f)
 
 	if reserved != 0 {
-		return -1, c.handleProtocolError("unexpected reserved bits")
+		return -1, c.handleProtocolError("unexpected reserved bits " + strconv.Itoa(reserved))
 	}
 
 	switch opCode {
@@ -363,7 +433,7 @@ func (c *Conn) advanceFrame() (int, error) {
 		}
 		c.readFinal = final
 	default:
-		return -1, c.handleProtocolError("unknown opcode")
+		return -1, c.handleProtocolError("unknown opcode " + strconv.Itoa(opCode))
 	}
 
 	// 3. Read and parse frame length.
@@ -383,13 +453,15 @@ func (c *Conn) advanceFrame() (int, error) {
 
 	// 4. Handle frame masking.
 
-	if !mask {
-		return -1, c.handleProtocolError("improper masking")
+	if mask != c.isServer {
+		return -1, c.handleProtocolError("incorrect mask flag")
 	}
 
-	c.maskPos = 0
-	if err := c.read(c.maskKey[:]); err != nil {
-		return -1, err
+	if mask {
+		c.readMaskPos = 0
+		if err := c.read(c.readMaskKey[:]); err != nil {
+			return -1, err
+		}
 	}
 
 	// 5. Return if not handling a control frame.
@@ -405,7 +477,7 @@ func (c *Conn) advanceFrame() (int, error) {
 	if err := c.read(payload); err != nil {
 		return -1, err
 	}
-	c.maskBytes(payload)
+	maskBytes(c.readMaskKey, 0, payload)
 
 	// 7. Process control frame payload.
 
@@ -413,13 +485,9 @@ func (c *Conn) advanceFrame() (int, error) {
 	case OpPong:
 		c.savedPong = payload
 	case OpPing:
-		frame := make([]byte, 2+len(payload))
-		frame[0] = finalBit | OpPong
-		frame[1] = byte(len(payload))
-		copy(frame[2:], payload)
-		c.write(OpPong, frame)
+		c.WriteControl(OpPong, payload, time.Now().Add(writeWait))
 	case OpClose:
-		c.write(OpClose, closeFrame)
+		c.WriteControl(OpClose, []byte{}, time.Now().Add(writeWait))
 		if len(payload) < 2 {
 			return -1, io.EOF
 		} else {
@@ -428,7 +496,7 @@ func (c *Conn) advanceFrame() (int, error) {
 			case CloseNormalClosure, CloseGoingAway:
 				return -1, io.EOF
 			default:
-				return -1, errors.New("websocket: peer sent " +
+				return -1, errors.New("websocket: close " +
 					strconv.Itoa(int(closeCode)) + " " +
 					string(payload[2:]))
 			}
@@ -439,7 +507,7 @@ func (c *Conn) advanceFrame() (int, error) {
 }
 
 func (c *Conn) handleProtocolError(message string) error {
-	c.SendClose(CloseProtocolError, message)
+	c.WriteControl(OpClose, FormatCloseMessage(CloseProtocolError, message), time.Now().Add(writeWait))
 	return errors.New("websocket: " + message)
 }
 
@@ -460,6 +528,15 @@ func (c *Conn) read(buf []byte) error {
 	return err
 }
 
+// NextReader returns the next message received from the peer. The returned
+// opCode is one of OpText, OpBinary or OpPong. The connection automatically
+// handles ping messages received from the peer. NextReader returns an error
+// upon receiving a close message from the peer.
+//
+// There can be at most one open reader on a connection. NextReader discards
+// the previous message if the application has not already consumed it.
+//
+// TODO: at comment about thread safety.
 func (c *Conn) NextReader() (opCode int, r io.Reader, err error) {
 
 	c.readSeq += 1
@@ -505,7 +582,7 @@ func (r messageReader) Read(b []byte) (n int, err error) {
 				b = b[:r.c.readLength]
 			}
 			r.c.readErr = r.c.read(b)
-			r.c.maskBytes(b)
+			r.c.readMaskPos = maskBytes(r.c.readMaskKey, r.c.readMaskPos, b)
 			r.c.readLength -= int64(len(b))
 			return len(b), r.c.readErr
 		}
@@ -523,4 +600,20 @@ func (r messageReader) Read(b []byte) (n int, err error) {
 		}
 	}
 	return 0, r.c.readErr
+}
+
+// SetReadDeadline sets the deadline for future calls to NextReader and the
+// io.Reader returned from NextReader. If the deadline is reached, the call
+// will fail with a timeout instead of blocking. A zero value for t means that
+// the methods will not time out.
+func (c *Conn) SetReadDeadline(t time.Time) error {
+	return c.conn.SetReadDeadline(t)
+}
+
+// FormatCloseMessage formats closeCode and text as a WebSocket close message.
+func FormatCloseMessage(closeCode int, text string) []byte {
+	buf := make([]byte, 2+len(text))
+	binary.BigEndian.PutUint16(buf, uint16(closeCode))
+	copy(buf[2:], text)
+	return buf
 }

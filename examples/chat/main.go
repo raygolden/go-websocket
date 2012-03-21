@@ -2,24 +2,34 @@ package main
 
 import (
 	"flag"
-	"github.com/garyburd/t2/server"
-	"github.com/garyburd/t2/web"
+	"log"
+	"net/http"
 	"text/template"
 )
 
 var addr = flag.String("addr", ":8080", "http service address")
 var homeTempl = template.Must(template.ParseFiles("home.html"))
 
-func serveHome(resp web.Response, req *web.Request) error {
-	w := resp.Start(web.StatusOK,
-		web.Header{web.HeaderContentType: {"text/html; charset=utf-8"}})
-	return homeTempl.Execute(w, req.URL.Host)
+func serveHome(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.Error(w, "Not found", 404)
+		return
+	}
+	if r.Method != "GET" {
+		http.Error(w, "Method nod allowed", 405)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	homeTempl.Execute(w, r.Host)
 }
 
 func main() {
 	flag.Parse()
 	go h.run()
-	server.Run(*addr, web.NewRouter().
-		Register("/", "GET", serveHome).
-		Register("/ws", "GET", serveWs))
+	http.HandleFunc("/", serveHome)
+	http.HandleFunc("/ws", serveWs)
+	err := http.ListenAndServe(*addr, nil)
+	if err != nil {
+		log.Fatal("ListenAndServe: ", err)
+	}
 }

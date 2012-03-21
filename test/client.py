@@ -10,7 +10,6 @@ if __name__ == '__main__':
        "options": {"failByDrop": False},
        "enable-ssl": False,
        "servers": [
-           {"agent": "gows/v", "url": "ws://localhost:9000/v", "options": {"version": 17}},
            {"agent": "gows/r", "url": "ws://localhost:9000/r", "options": {"version": 17}},
            {"agent": "gows/c", "url": "ws://localhost:9000/c", "options": {"version": 17}},
         ],

@@ -2,8 +2,9 @@ package main
 
 import (
 	"github.com/garyburd/go-websocket/websocket"
-	"github.com/garyburd/t2/web"
 	"io/ioutil"
+	"log"
+	"net/http"
 )
 
 type connection struct {
@@ -48,15 +49,20 @@ func (c *connection) writer() {
 	c.ws.Close()
 }
 
-func serveWs(resp web.Response, req *web.Request) error {
-	ws, err := websocket.Upgrade(resp, req, "")
+func serveWs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	ws, err := websocket.Upgrade(w, r.Header, "", 1024, 1024)
 	if err != nil {
-		return err
+		log.Println(err)
+		http.Error(w, "Bad request", 400)
+		return
 	}
 	c := &connection{send: make(chan []byte, 256), ws: ws}
 	h.register <- c
 	defer func() { h.unregister <- c }()
 	go c.writer()
 	c.reader()
-	return nil
 }

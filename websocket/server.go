@@ -15,54 +15,99 @@
 package websocket
 
 import (
+	"bufio"
+	"bytes"
+	"crypto/sha1"
+	"encoding/base64"
 	"errors"
-	"github.com/garyburd/t2/web"
+	"net"
 	"strings"
 )
 
-func inListHeader(header web.Header, key string, value string) bool {
-	for _, v := range header.GetList(key) {
-		if strings.EqualFold(value, v) {
-			return true
+var (
+	keyGUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+)
+
+func headerHasValue(header map[string][]string, key string, value string) bool {
+	for _, v := range header[key] {
+		for _, s := range strings.Split(v, ",") {
+			if strings.EqualFold(value, strings.TrimSpace(s)) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// Upgrade upgrades the HTTP connection to the WebSocket protocol. 
-func Upgrade(resp web.Response, req *web.Request, subProtocol string) (*Conn, error) {
+// Upgrade upgrades the HTTP server connection to the WebSocket protocol. The
+// resp argument is any object that suports the http.Hijack interface
+// (http.ResponseWriter, Twister web.Responder, Indigo web.Responder).
+func Upgrade(resp interface{}, header map[string][]string, subProtocol string, readBufSize, writeBufSize int) (*Conn, error) {
 
-	if req.Method != "GET" {
-		return nil, &web.Error{Status: web.StatusMethodNotAllowed}
+	if values := header["Sec-Websocket-Version"]; len(values) == 0 || values[0] != "13" {
+		return nil, errors.New("websocket: version != 13")
 	}
 
-	if "13" != req.Header.Get(web.HeaderSecWebSocketVersion) {
-		return nil, &web.Error{
-			Status: web.StatusBadRequest,
-			Reason: errors.New("websocket: version != 13")}
+	if !headerHasValue(header, "Connection", "upgrade") {
+		return nil, errors.New("websocket: connection header != upgrade")
 	}
 
-	if !inListHeader(req.Header, web.HeaderConnection, "upgrade") {
-		return nil, &web.Error{
-			Status: web.StatusBadRequest,
-			Reason: errors.New("websocket: connection header != upgrade")}
+	if !headerHasValue(header, "Upgrade", "websocket") {
+		return nil, errors.New("websocket: upgrade != websocket")
 	}
 
-	if !inListHeader(req.Header, web.HeaderUpgrade, "websocket") {
-		return nil, &web.Error{
-			Status: web.StatusBadRequest,
-			Reason: errors.New("websocket: upgrade != websocket")}
+	var key []byte
+	if values := header["Sec-Websocket-Key"]; len(values) == 0 || values[0] == "" {
+		return nil, errors.New("websocket: key missing or blank")
+	} else {
+		key = []byte(values[0])
 	}
 
-	netConn, br, err := resp.Hijack()
-	if err != nil {
+	h := sha1.New()
+	h.Write(key)
+	h.Write(keyGUID)
+	accpektKey := base64.StdEncoding.EncodeToString(h.Sum(nil))
+
+	var buf bytes.Buffer
+	buf.WriteString("HTTP/1.1 101 Switching Protocols")
+	buf.WriteString("\r\nUpgrade: websocket")
+	buf.WriteString("\r\nConnection: Upgrade")
+	buf.WriteString("\r\nSec-WebSocket-Accept: ")
+	buf.WriteString(accpektKey)
+	if subProtocol != "" {
+		buf.WriteString("\r\nSec-WebSocket-Protocol: ")
+		buf.WriteString(subProtocol)
+	}
+	buf.WriteString("\r\n\r\n")
+
+	var netConn net.Conn
+	var br *bufio.Reader
+	var err error
+
+	if h, ok := resp.(interface {
+		Hijack() (net.Conn, *bufio.Reader, error)
+	}); ok {
+		// Indigo, Twister
+		netConn, br, err = h.Hijack()
+	} else if h, ok := resp.(interface {
+		Hijack() (net.Conn, *bufio.ReadWriter, error)
+	}); ok {
+		// Standard HTTP package.
+		var rw *bufio.ReadWriter
+		netConn, rw, err = h.Hijack()
+		br = rw.Reader
+	} else {
+		return nil, errors.New("websocket: resp does not support Hijack")
+	}
+
+	if br.Buffered() > 0 {
+		return nil, errors.New("websocket: client sent data before handshake complete")
+	}
+
+	if _, err = netConn.Write(buf.Bytes()); err != nil {
+		netConn.Close()
 		return nil, err
 	}
 
-	conn, err := NewServerConn(netConn, br, 4096, subProtocol, req.Header.Get(web.HeaderSecWebSocketKey))
-	if err != nil {
-		netConn.Close()
-	}
-
-	return conn, err
+	return newConn(netConn, true, readBufSize, writeBufSize), nil
 }
