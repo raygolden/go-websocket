@@ -1,5 +1,7 @@
 package main
 
+// hub maintains the set of active connections and broadcasts messages to the
+// connections.
 type hub struct {
 	// Registered connections.
 	connections map[*connection]bool
@@ -34,9 +36,8 @@ func (h *hub) run() {
 				select {
 				case c.send <- m:
 				default:
-					delete(h.connections, c)
 					close(c.send)
-					go c.ws.Close()
+					delete(h.connections, c)
 				}
 			}
 		}

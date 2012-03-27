@@ -161,8 +161,10 @@ func (c *Conn) write(opCode int, deadline time.Time, bufs ...[]byte) error {
 	return nil
 }
 
-// WriteControl writes a control message with the given deadline. 
-func (c *Conn) WriteControl(opCode int, data []byte, deadline time.Time) error {
+// WriteControl writes a control message with the given deadline. The allowed
+// opCodes are OpClose, OpPing and OpPong.
+func (c *Conn) WriteControl(opCode int, data []byte, deadline time.Time) error
+{
 	if opCode != OpClose && opCode != OpPing && opCode != OpPong {
 		return errBadWriteOpCode
 	}
@@ -213,14 +215,15 @@ func (c *Conn) WriteControl(opCode int, data []byte, deadline time.Time) error {
 	return err
 }
 
-// NextWriter returns a writer for the next message to send.  The allowed
+// NextWriter returns a writer for the next message to send. The allowed
 // opCodes are OpText, OpBinary, OpClose and OpPing. The writer's Close method
 // flushes the complete message to the network.
 //
 // There can be at most one open writer on a connection.NextWriter closes the
 // previous writer if the application has not already done so.
 //
-// TODO: Add comment about thread safety.
+// The NextWriter method and the writers returned from the method cannot be
+// accessed by more than one goroutine at a time.
 func (c *Conn) NextWriter(opCode int) (io.WriteCloser, error) {
 	if c.writeOpCode != -1 {
 		if err := c.flushFrame(true, nil); err != nil {
@@ -536,7 +539,8 @@ func (c *Conn) read(buf []byte) error {
 // There can be at most one open reader on a connection. NextReader discards
 // the previous message if the application has not already consumed it.
 //
-// TODO: at comment about thread safety.
+// The NextReader method and the readers returned from the method cannot be
+// accessed by more than one goroutine at a time.
 func (c *Conn) NextReader() (opCode int, r io.Reader, err error) {
 
 	c.readSeq += 1

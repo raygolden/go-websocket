@@ -4,7 +4,7 @@ Go-WebSocket is a [Go](http://golang.org/) implementation of the
 [WebSocket](http://www.rfc-editor.org/rfc/rfc6455.txt) protocol.
 
 Go-WebSocket passes the server tests in the [Autobahn WebSockets Test
-Suite](http://autobahn.ws/testsuite) using the applications in the [test
+Suite](http://autobahn.ws/testsuite) using the application in the [test
 subdirectory](https://github.com/garyburd/go-websocket/tree/master/test).
 
 ## Documentation
