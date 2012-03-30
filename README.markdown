@@ -1,4 +1,4 @@
-# Go-WebSocket
+# Go-WebSocket 
 
 Go-WebSocket is a [Go](http://golang.org/) implementation of the
 [WebSocket](http://www.rfc-editor.org/rfc/rfc6455.txt) protocol.
