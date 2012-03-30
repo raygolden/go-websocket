@@ -163,8 +163,7 @@ func (c *Conn) write(opCode int, deadline time.Time, bufs ...[]byte) error {
 
 // WriteControl writes a control message with the given deadline. The allowed
 // opCodes are OpClose, OpPing and OpPong.
-func (c *Conn) WriteControl(opCode int, data []byte, deadline time.Time) error
-{
+func (c *Conn) WriteControl(opCode int, data []byte, deadline time.Time) error {
 	if opCode != OpClose && opCode != OpPing && opCode != OpPong {
 		return errBadWriteOpCode
 	}
