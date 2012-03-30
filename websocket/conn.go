@@ -609,7 +609,7 @@ func (r messageReader) Read(b []byte) (n int, err error) {
 // SetReadDeadline sets the deadline for future calls to NextReader and the
 // io.Reader returned from NextReader. If the deadline is reached, the call
 // will fail with a timeout instead of blocking. A zero value for t means that
-// the methods will not time out.
+// the methods will not time out. 
 func (c *Conn) SetReadDeadline(t time.Time) error {
 	return c.conn.SetReadDeadline(t)
 }
