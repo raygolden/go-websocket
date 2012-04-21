@@ -13,7 +13,7 @@ development environment.
 Once you have Go up and running, you can download, build and run the example
 using the following commands.
 
-    $ go get github.com/go-websocket/examples/chat
+    $ go get github.com/garyburd/go-websocket/examples/chat
     $ cd `go list -f '{{.Dir}}' github.com/garyburd/go-websocket/examples/chat`
     $ go run *.go
 
