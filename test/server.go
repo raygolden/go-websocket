@@ -27,7 +27,7 @@ import (
 )
 
 // echoCopy echoes messages from the client using io.Copy.
-func echoCopy(w http.ResponseWriter, r *http.Request) {
+func echoCopy(w http.ResponseWriter, r *http.Request, writerOnly bool) {
 	conn, err := websocket.Upgrade(w, r.Header, "", 4096, 4096)
 	if err != nil {
 		log.Println("Upgrade:", err)
@@ -57,7 +57,11 @@ func echoCopy(w http.ResponseWriter, r *http.Request) {
 		if op == websocket.OpText {
 			r = &validator{r: r}
 		}
-		_, err = io.Copy(w, r)
+		if writerOnly {
+			_, err = io.Copy(struct{ io.Writer }{w}, r)
+		} else {
+			_, err = io.Copy(w, r)
+		}
 		if err != nil {
 			if err == errInvalidUTF8 {
 				conn.WriteControl(websocket.OpClose,
@@ -73,6 +77,14 @@ func echoCopy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func echoCopyWriterOnly(w http.ResponseWriter, r *http.Request) {
+	echoCopy(w, r, true)
+}
+
+func echoCopyFull(w http.ResponseWriter, r *http.Request) {
+	echoCopy(w, r, false)
 }
 
 // echoReadAll echoes messages from the client by reading the entire message
@@ -143,7 +155,8 @@ var addr = flag.String("addr", ":9000", "http service address")
 func main() {
 	flag.Parse()
 	http.HandleFunc("/", serveHome)
-	http.HandleFunc("/c", echoCopy)
+	http.HandleFunc("/c", echoCopyWriterOnly)
+	http.HandleFunc("/f", echoCopyFull)
 	http.HandleFunc("/r", echoReadAll)
 	err := http.ListenAndServe(*addr, nil)
 	if err != nil {

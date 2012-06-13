@@ -10,9 +10,16 @@ import (
 )
 
 const (
-	readWait       = 60 * time.Second
-	pingPeriod     = 25 * time.Second
-	writeWait      = 10 * time.Second
+	// Time allowed to write a message to the client.
+	writeWait = 10 * time.Second
+
+	// Time allowed to read the next message from the client.
+	readWait = 60 * time.Second
+
+	// Send pings to client with this period. Must be less than readWait.
+	pingPeriod = (readWait * 9) / 10
+
+	// Maximum message size allowed from client.
 	maxMessageSize = 512
 )
 
@@ -27,14 +34,23 @@ type connection struct {
 
 // readPump pumps messages from the websocket connection to the hub.
 func (c *connection) readPump() {
-	defer c.ws.Close()
+	defer func() {
+		h.unregister <- c
+		c.ws.Close()
+	}()
 	for {
+		// Use deadline to detect dead or stuck clients.  
 		c.ws.SetReadDeadline(time.Now().Add(readWait))
 		op, r, err := c.ws.NextReader()
 		if err != nil {
 			return
 		}
+		if op == websocket.OpBinary {
+			// unexpected
+			return
+		}
 		if op != websocket.OpText {
+			// ignore pongs and other control messages.
 			continue
 		}
 		lr := io.LimitedReader{R: r, N: maxMessageSize + 1}
@@ -43,6 +59,7 @@ func (c *connection) readPump() {
 			return
 		}
 		if lr.N <= 0 {
+			// Message is larger than max allowed message size.
 			c.ws.WriteControl(websocket.OpClose,
 				websocket.FormatCloseMessage(websocket.CloseMessageTooBig, ""),
 				time.Now().Add(time.Second))
@@ -68,9 +85,11 @@ func (c *connection) write(opCode int, payload []byte) error {
 
 // writePump pumps messages from the hub to the websocket connection.
 func (c *connection) writePump() {
-	defer c.ws.Close()
 	ticker := time.NewTicker(pingPeriod)
-	defer ticker.Stop()
+	defer func() {
+		ticker.Stop()
+		c.ws.Close()
+	}()
 	for {
 		select {
 		case message, ok := <-c.send:
@@ -103,7 +122,6 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 	}
 	c := &connection{send: make(chan []byte, 256), ws: ws}
 	h.register <- c
-	defer func() { h.unregister <- c }()
 	go c.writePump()
 	c.readPump()
 }

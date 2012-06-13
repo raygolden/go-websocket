@@ -61,44 +61,53 @@ func TestFraming(t *testing.T) {
 			rc := newConn(fakeNetConn{Reader: chunker.f(&connBuf), Writer: nil}, !isServer, 1024, 1024)
 
 			for _, n := range frameSizes {
-				name := fmt.Sprintf("s:%b, r:%s, n:%d", isServer, chunker.name, n)
+				for _, iocopy := range []bool{true, false} {
+					name := fmt.Sprintf("s:%b, r:%s, n:%d c:%s", isServer, chunker.name, n, iocopy)
 
-				w, err := wc.NextWriter(OpText)
-				if err != nil {
-					t.Errorf("%s: wc.NextWriter() returned %v", name, err)
-					continue
-				}
-				nn, err := w.Write(writeBuf[:n])
-				if err != nil || nn != n {
-					t.Errorf("%s: w.Write(writeBuf[:n]) returned %d, %v", name, nn, err)
-					continue
-				}
-				err = w.Close()
-				if err != nil {
-					t.Errorf("%s: w.Close() returned %v", name, err)
-					continue
-				}
+					w, err := wc.NextWriter(OpText)
+					if err != nil {
+						t.Errorf("%s: wc.NextWriter() returned %v", name, err)
+						continue
+					}
+					var nn int
+					if iocopy {
+						var n64 int64
+						n64, err = io.Copy(w, bytes.NewReader(writeBuf[:n]))
+						nn = int(n64)
+					} else {
+						nn, err = w.Write(writeBuf[:n])
+					}
+					if err != nil || nn != n {
+						t.Errorf("%s: w.Write(writeBuf[:n]) returned %d, %v", name, nn, err)
+						continue
+					}
+					err = w.Close()
+					if err != nil {
+						t.Errorf("%s: w.Close() returned %v", name, err)
+						continue
+					}
 
-				opCode, r, err := rc.NextReader()
-				if err != nil || opCode != OpText {
-					t.Errorf("%s: NextReader() returned %d, r, %v", name, opCode, err)
-					continue
-				}
-				rbuf, err := ioutil.ReadAll(r)
-				if err != nil {
-					t.Errorf("%s: ReadFull() returned rbuf, %v", name, err)
-					continue
-				}
+					opCode, r, err := rc.NextReader()
+					if err != nil || opCode != OpText {
+						t.Errorf("%s: NextReader() returned %d, r, %v", name, opCode, err)
+						continue
+					}
+					rbuf, err := ioutil.ReadAll(r)
+					if err != nil {
+						t.Errorf("%s: ReadFull() returned rbuf, %v", name, err)
+						continue
+					}
 
-				if len(rbuf) != n {
-					t.Errorf("%s: len(rbuf) is %d, want %d", len(rbuf), n)
-					continue
-				}
+					if len(rbuf) != n {
+						t.Errorf("%s: len(rbuf) is %d, want %d", len(rbuf), n)
+						continue
+					}
 
-				for i, b := range rbuf {
-					if byte(i) != b {
-						t.Errorf("%s: bad byte at offset %d", name, i)
-						break
+					for i, b := range rbuf {
+						if byte(i) != b {
+							t.Errorf("%s: bad byte at offset %d", name, i)
+							break
+						}
 					}
 				}
 			}

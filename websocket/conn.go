@@ -370,6 +370,31 @@ func (w messageWriter) WriteString(p string) (int, error) {
 	return nn, nil
 }
 
+func (w messageWriter) ReadFrom(r io.Reader) (nn int64, err error) {
+	if w.c.writeSeq != w.seq {
+		return 0, errWriteClosed
+	}
+	for {
+		if w.c.writePos == len(w.c.writeBuf) {
+			err = w.c.flushFrame(false, nil)
+			if err != nil {
+				break
+			}
+		}
+		var n int
+		n, err = r.Read(w.c.writeBuf[w.c.writePos:])
+		w.c.writePos += n
+		nn += int64(n)
+		if err != nil {
+			if err == io.EOF {
+				err = nil
+			}
+			break
+		}
+	}
+	return nn, err
+}
+
 func (w messageWriter) Close() error {
 	if w.c.writeSeq != w.seq {
 		return errWriteClosed
