@@ -13,6 +13,6 @@ To test the server, run it
 
 and start the client test driver
 
-    python client.py
+    wstest -m fuzzingclient -s fuzzingclient.json
 
 When the client completes, it writes a report to reports/servers/index.html.

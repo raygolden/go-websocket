@@ -98,6 +98,7 @@ type Conn struct {
 	closeSent bool          // true if close message was sent
 
 	// Message writer fields.
+	writeErr      error
 	writeBuf      []byte // frame is constructed in this buffer.
 	writePos      int    // end of data in writeBuf.
 	writeOpCode   int    // op code for the current frame.
@@ -224,6 +225,10 @@ func (c *Conn) WriteControl(opCode int, data []byte, deadline time.Time) error {
 // The NextWriter method and the writers returned from the method cannot be
 // accessed by more than one goroutine at a time.
 func (c *Conn) NextWriter(opCode int) (io.WriteCloser, error) {
+	if c.writeErr != nil {
+		return nil, c.writeErr
+	}
+
 	if c.writeOpCode != -1 {
 		if err := c.flushFrame(true, nil); err != nil {
 			return nil, err
@@ -294,7 +299,7 @@ func (c *Conn) flushFrame(final bool, extra []byte) error {
 	}
 
 	// Write the buffers to the connection.
-	err := c.write(c.writeOpCode, c.writeDeadline, c.writeBuf[framePos:c.writePos], extra)
+	c.writeErr = c.write(c.writeOpCode, c.writeDeadline, c.writeBuf[framePos:c.writePos], extra)
 
 	// Setup for next frame.
 	c.writePos = maxFrameHeaderSize
@@ -303,12 +308,23 @@ func (c *Conn) flushFrame(final bool, extra []byte) error {
 		c.writeSeq += 1
 		c.writeOpCode = -1
 	}
-	return err
+	return c.writeErr
 }
 
 type messageWriter struct {
 	c   *Conn
 	seq int
+}
+
+func (w messageWriter) err() error {
+	c := w.c
+	if c.writeSeq != w.seq {
+		return errWriteClosed
+	}
+	if c.writeErr != nil {
+		return c.writeErr
+	}
+	return nil
 }
 
 func (w messageWriter) ncopy(max int) (int, error) {
@@ -326,8 +342,8 @@ func (w messageWriter) ncopy(max int) (int, error) {
 }
 
 func (w messageWriter) Write(p []byte) (int, error) {
-	if w.c.writeSeq != w.seq {
-		return 0, errWriteClosed
+	if err := w.err(); err != nil {
+		return 0, err
 	}
 
 	if len(p) > 2*len(w.c.writeBuf) && w.c.isServer {
@@ -353,8 +369,8 @@ func (w messageWriter) Write(p []byte) (int, error) {
 }
 
 func (w messageWriter) WriteString(p string) (int, error) {
-	if w.c.writeSeq != w.seq {
-		return 0, errWriteClosed
+	if err := w.err(); err != nil {
+		return 0, err
 	}
 
 	nn := len(p)
@@ -371,8 +387,8 @@ func (w messageWriter) WriteString(p string) (int, error) {
 }
 
 func (w messageWriter) ReadFrom(r io.Reader) (nn int64, err error) {
-	if w.c.writeSeq != w.seq {
-		return 0, errWriteClosed
+	if err := w.err(); err != nil {
+		return 0, err
 	}
 	for {
 		if w.c.writePos == len(w.c.writeBuf) {
@@ -396,8 +412,8 @@ func (w messageWriter) ReadFrom(r io.Reader) (nn int64, err error) {
 }
 
 func (w messageWriter) Close() error {
-	if w.c.writeSeq != w.seq {
-		return errWriteClosed
+	if err := w.err(); err != nil {
+		return err
 	}
 	return w.c.flushFrame(true, nil)
 }
