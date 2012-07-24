@@ -94,8 +94,8 @@ type Conn struct {
 	isServer bool
 
 	// Write fields
-	mu        chan struct{} // used as mutex to protect write to conn and closeSent
-	closeSent bool          // true if close message was sent
+	mu        chan bool // used as mutex to protect write to conn and closeSent
+	closeSent bool      // true if close message was sent
 
 	// Message writer fields.
 	writeErr      error
@@ -117,11 +117,14 @@ type Conn struct {
 }
 
 func newConn(conn net.Conn, isServer bool, readBufSize, writeBufSize int) *Conn {
+	mu := make(chan bool, 1)
+	mu <- true
+
 	return &Conn{
 		isServer:    isServer,
 		br:          bufio.NewReaderSize(conn, readBufSize),
 		conn:        conn,
-		mu:          make(chan struct{}, 1),
+		mu:          mu,
 		readFinal:   true,
 		writeBuf:    make([]byte, writeBufSize+maxFrameHeaderSize),
 		writeOpCode: -1,
@@ -137,8 +140,8 @@ func (c *Conn) Close() error {
 // Write methods
 
 func (c *Conn) write(opCode int, deadline time.Time, bufs ...[]byte) error {
-	c.mu <- struct{}{}
-	defer func() { <-c.mu }()
+	<-c.mu
+	defer func() { c.mu <- true }()
 
 	if c.closeSent {
 		return ErrCloseSent
@@ -194,12 +197,12 @@ func (c *Conn) WriteControl(opCode int, data []byte, deadline time.Time) error {
 
 	timer := time.NewTimer(d)
 	select {
-	case c.mu <- struct{}{}:
+	case <-c.mu:
 		timer.Stop()
 	case <-timer.C:
 		return errWriteTimeout
 	}
-	defer func() { <-c.mu }()
+	defer func() { c.mu <- true }()
 
 	if c.closeSent {
 		return ErrCloseSent
