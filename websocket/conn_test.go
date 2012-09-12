@@ -99,7 +99,7 @@ func TestFraming(t *testing.T) {
 					}
 
 					if len(rbuf) != n {
-						t.Errorf("%s: len(rbuf) is %d, want %d", len(rbuf), n)
+						t.Errorf("%s: len(rbuf) is %d, want %d", name, len(rbuf), n)
 						continue
 					}
 
