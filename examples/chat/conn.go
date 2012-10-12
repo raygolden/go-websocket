@@ -72,15 +72,7 @@ func (c *connection) readPump() {
 // write writes a message with the given opCode and payload.
 func (c *connection) write(opCode int, payload []byte) error {
 	c.ws.SetWriteDeadline(time.Now().Add(writeWait))
-	w, err := c.ws.NextWriter(opCode)
-	if err != nil {
-		return err
-	}
-	if _, err := w.Write(payload); err != nil {
-		w.Close()
-		return err
-	}
-	return w.Close()
+	return c.ws.WriteMessage(opCode, payload)
 }
 
 // writePump pumps messages from the hub to the websocket connection.

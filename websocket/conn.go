@@ -421,6 +421,20 @@ func (w messageWriter) Close() error {
 	return w.c.flushFrame(true, nil)
 }
 
+// WriteMessage is a simple helper method for getting a writer using
+// NextWriter, writing the message and closing the writer.
+func (c *Conn) WriteMessage(opCode int, data []byte) error {
+	w, err := c.NextWriter(opCode)
+	if err != nil {
+		return err
+	}
+	defer w.Close()
+	if _, err := w.Write(data); err != nil {
+		return err
+	}
+	return w.Close()
+}
+
 // SetWriteDeadline sets the deadline for future calls to NextWriter and the
 // io.WriteCloser returned from NextWriter. If the deadline is reached, the
 // call will fail with a timeout instead of blocking. A zero value for t means
