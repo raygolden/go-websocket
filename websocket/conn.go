@@ -15,8 +15,8 @@
 // Package websocket implements the WebSocket protocol defined in RFC 6455.
 //
 // The websocket package passes UTF-8 text to and from the network without
-// validation. If the appliation receives invalid UTF-8 text, the appliation
-// should close the connection with close code CloseInvalidFramePayloadData.
+// validation. It is the application's responsibility to validate the contents
+// of text messages.
 package websocket
 
 import (
@@ -222,7 +222,7 @@ func (c *Conn) WriteControl(opCode int, data []byte, deadline time.Time) error {
 // opCodes are OpText, OpBinary, OpClose and OpPing. The writer's Close method
 // flushes the complete message to the network.
 //
-// There can be at most one open writer on a connection.NextWriter closes the
+// There can be at most one open writer on a connection. NextWriter closes the
 // previous writer if the application has not already done so.
 //
 // The NextWriter method and the writers returned from the method cannot be
