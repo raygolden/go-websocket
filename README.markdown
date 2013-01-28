@@ -9,7 +9,7 @@ subdirectory](https://github.com/garyburd/go-websocket/tree/master/test).
 
 ## Documentation
 
-* [Reference](http://gopkgdoc.appspot.com/pkg/github.com/garyburd/go-websocket/websocket)
+* [Reference](http://godoc.org/github.com/garyburd/go-websocket/websocket)
 * [Chat example](https://github.com/garyburd/go-websocket/tree/master/examples/chat)
 
 ## License

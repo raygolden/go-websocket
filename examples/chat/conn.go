@@ -23,7 +23,7 @@ const (
 	maxMessageSize = 512
 )
 
-// connection is an middleman between the websocket connection and the hub. 
+// connection is an middleman between the websocket connection and the hub.
 type connection struct {
 	// The websocket connection.
 	ws *websocket.Conn
@@ -39,7 +39,7 @@ func (c *connection) readPump() {
 		c.ws.Close()
 	}()
 	for {
-		// Use deadline to detect dead or stuck clients.  
+		// Use deadline to detect dead or stuck clients.
 		c.ws.SetReadDeadline(time.Now().Add(readWait))
 		op, r, err := c.ws.NextReader()
 		if err != nil {
