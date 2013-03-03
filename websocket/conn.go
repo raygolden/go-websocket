@@ -247,7 +247,6 @@ func (c *Conn) NextWriter(opCode int) (io.WriteCloser, error) {
 }
 
 func (c *Conn) flushFrame(final bool, extra []byte) error {
-
 	length := c.writePos - maxFrameHeaderSize + len(extra)
 
 	// Check for invalid control frames.
@@ -344,14 +343,14 @@ func (w messageWriter) ncopy(max int) (int, error) {
 	return n, nil
 }
 
-func (w messageWriter) Write(p []byte) (int, error) {
+func (w messageWriter) write(final bool, p []byte) (int, error) {
 	if err := w.err(); err != nil {
 		return 0, err
 	}
 
 	if len(p) > 2*len(w.c.writeBuf) && w.c.isServer {
 		// Don't buffer large messages.
-		err := w.c.flushFrame(false, p)
+		err := w.c.flushFrame(final, p)
 		if err != nil {
 			return 0, err
 		}
@@ -369,6 +368,10 @@ func (w messageWriter) Write(p []byte) (int, error) {
 		p = p[n:]
 	}
 	return nn, nil
+}
+
+func (w messageWriter) Write(p []byte) (int, error) {
+	return w.write(false, p)
 }
 
 func (w messageWriter) WriteString(p string) (int, error) {
@@ -421,18 +424,23 @@ func (w messageWriter) Close() error {
 	return w.c.flushFrame(true, nil)
 }
 
-// WriteMessage is a simple helper method for getting a writer using
-// NextWriter, writing the message and closing the writer.
+// WriteMessage is a helper method for getting a writer using NextWriter,
+// writing the message and closing the writer.
 func (c *Conn) WriteMessage(opCode int, data []byte) error {
-	w, err := c.NextWriter(opCode)
+	wr, err := c.NextWriter(opCode)
 	if err != nil {
 		return err
 	}
-	defer w.Close()
-	if _, err := w.Write(data); err != nil {
+	w := wr.(messageWriter)
+	if _, err := w.write(true, data); err != nil {
 		return err
 	}
-	return w.Close()
+	if c.writeSeq == w.seq {
+		if err := c.flushFrame(true, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SetWriteDeadline sets the deadline for future calls to NextWriter and the
