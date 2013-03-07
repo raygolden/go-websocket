@@ -2,7 +2,6 @@ package main
 
 import (
 	"github.com/garyburd/go-websocket/websocket"
-	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -38,34 +37,23 @@ func (c *connection) readPump() {
 		h.unregister <- c
 		c.ws.Close()
 	}()
+	c.ws.SetReadLimit(maxMessageSize)
+	c.ws.SetReadDeadline(time.Now().Add(readWait))
 	for {
-		// Use deadline to detect dead or stuck clients.
-		c.ws.SetReadDeadline(time.Now().Add(readWait))
 		op, r, err := c.ws.NextReader()
 		if err != nil {
-			return
+			break
 		}
-		if op == websocket.OpBinary {
-			// unexpected
-			return
+		switch op {
+		case websocket.OpPong:
+			c.ws.SetReadDeadline(time.Now().Add(readWait))
+		case websocket.OpText:
+			message, err := ioutil.ReadAll(r)
+			if err != nil {
+				break
+			}
+			h.broadcast <- message
 		}
-		if op != websocket.OpText {
-			// ignore pongs and other control messages.
-			continue
-		}
-		lr := io.LimitedReader{R: r, N: maxMessageSize + 1}
-		message, err := ioutil.ReadAll(&lr)
-		if err != nil {
-			return
-		}
-		if lr.N <= 0 {
-			// Message is larger than max allowed message size.
-			c.ws.WriteControl(websocket.OpClose,
-				websocket.FormatCloseMessage(websocket.CloseMessageTooBig, ""),
-				time.Now().Add(time.Second))
-			return
-		}
-		h.broadcast <- message
 	}
 }
 
@@ -106,10 +94,16 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", 405)
 		return
 	}
+	if r.Header.Get("Origin") != "http://"+r.Host {
+		http.Error(w, "Origin not allowed", 403)
+		return
+	}
 	ws, err := websocket.Upgrade(w, r.Header, "", 1024, 1024)
-	if err != nil {
+	if _, ok := err.(websocket.HandshakeError); ok {
+		http.Error(w, "Not a websocket handshake", 400)
+		return
+	} else if err != nil {
 		log.Println(err)
-		http.Error(w, "Bad request", 400)
 		return
 	}
 	c := &connection{send: make(chan []byte, 256), ws: ws}

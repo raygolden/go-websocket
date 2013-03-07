@@ -16,7 +16,6 @@ package websocket
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/sha1"
 	"encoding/base64"
 	"errors"
@@ -28,8 +27,17 @@ var (
 	keyGUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
 )
 
-func headerHasValue(header map[string][]string, key string, value string) bool {
-	for _, v := range header[key] {
+// HandeshakeError describes an error with the handshake from the peer.
+type HandshakeError struct {
+	Err string
+}
+
+func (e HandshakeError) Error() string { return e.Err }
+
+// tokenListContainsValue returns true if the 1#token header with the given
+// name contains token.
+func tokenListContainsValue(header map[string][]string, name string, value string) bool {
+	for _, v := range header[name] {
 		for _, s := range strings.Split(v, ",") {
 			if strings.EqualFold(value, strings.TrimSpace(s)) {
 				return true
@@ -40,54 +48,51 @@ func headerHasValue(header map[string][]string, key string, value string) bool {
 }
 
 // Upgrade upgrades the HTTP server connection to the WebSocket protocol. The
-// resp argument is any object that suports the http.Hijack interface
-// (http.ResponseWriter, Twister web.Responder, Indigo web.Responder).
-func Upgrade(resp interface{}, header map[string][]string, subProtocol string, readBufSize, writeBufSize int) (*Conn, error) {
+// resp argument is any object that supports the http.Hijack interface
+// (http.ResponseWriter, Indigo web.Responder).
+//
+// Upgrade returns a HandshakeError if the request is not a WebSocket
+// handshake. Applications should handle errors of this type by replying to the
+// client with an HTTP response.
+//
+// The application is responsible for checking the request origin before
+// calling Upgrade. An example implementation of the same origin policy is:
+//
+//	if req.Header.Get("Origin") != "http://"+req.Host {
+//		http.Error(w, "Origin not allowed", 403)
+//		return
+//	}
+func Upgrade(resp interface{}, requestHeader map[string][]string, subProtocol string, readBufSize, writeBufSize int) (*Conn, error) {
 
-	if values := header["Sec-Websocket-Version"]; len(values) == 0 || values[0] != "13" {
-		return nil, errors.New("websocket: version != 13")
+	if values := requestHeader["Sec-Websocket-Version"]; len(values) == 0 || values[0] != "13" {
+		return nil, HandshakeError{"websocket: version != 13"}
 	}
 
-	if !headerHasValue(header, "Connection", "upgrade") {
-		return nil, errors.New("websocket: connection header != upgrade")
+	if !tokenListContainsValue(requestHeader, "Connection", "upgrade") {
+		return nil, HandshakeError{"websocket: connection header != upgrade"}
 	}
 
-	if !headerHasValue(header, "Upgrade", "websocket") {
-		return nil, errors.New("websocket: upgrade != websocket")
+	if !tokenListContainsValue(requestHeader, "Upgrade", "websocket") {
+		return nil, HandshakeError{"websocket: upgrade != websocket"}
 	}
 
-	var key []byte
-	if values := header["Sec-Websocket-Key"]; len(values) == 0 || values[0] == "" {
-		return nil, errors.New("websocket: key missing or blank")
+	var key string
+	if values := requestHeader["Sec-Websocket-Key"]; len(values) == 0 || values[0] == "" {
+		return nil, HandshakeError{"websocket: key missing or blank"}
 	} else {
-		key = []byte(values[0])
+		key = values[0]
 	}
 
-	h := sha1.New()
-	h.Write(key)
-	h.Write(keyGUID)
-	accpektKey := base64.StdEncoding.EncodeToString(h.Sum(nil))
-
-	var buf bytes.Buffer
-	buf.WriteString("HTTP/1.1 101 Switching Protocols")
-	buf.WriteString("\r\nUpgrade: websocket")
-	buf.WriteString("\r\nConnection: Upgrade")
-	buf.WriteString("\r\nSec-WebSocket-Accept: ")
-	buf.WriteString(accpektKey)
-	if subProtocol != "" {
-		buf.WriteString("\r\nSec-WebSocket-Protocol: ")
-		buf.WriteString(subProtocol)
-	}
-	buf.WriteString("\r\n\r\n")
-
-	var netConn net.Conn
-	var br *bufio.Reader
-	var err error
+	var (
+		netConn net.Conn
+		br      *bufio.Reader
+		err     error
+	)
 
 	if h, ok := resp.(interface {
 		Hijack() (net.Conn, *bufio.Reader, error)
 	}); ok {
-		// Indigo, Twister
+		// Indigo
 		netConn, br, err = h.Hijack()
 	} else if h, ok := resp.(interface {
 		Hijack() (net.Conn, *bufio.ReadWriter, error)
@@ -101,13 +106,31 @@ func Upgrade(resp interface{}, header map[string][]string, subProtocol string, r
 	}
 
 	if br.Buffered() > 0 {
+		netConn.Close()
 		return nil, errors.New("websocket: client sent data before handshake complete")
 	}
 
-	if _, err = netConn.Write(buf.Bytes()); err != nil {
+	c := newConn(netConn, true, readBufSize, writeBufSize)
+
+	h := sha1.New()
+	h.Write([]byte(key))
+	h.Write(keyGUID)
+	acceptKey := make([]byte, base64.StdEncoding.EncodedLen(sha1.Size))
+	base64.StdEncoding.Encode(acceptKey, h.Sum(nil))
+
+	p := c.writeBuf[:0]
+	p = append(p, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "...)
+	p = append(p, acceptKey...)
+	if subProtocol != "" {
+		p = append(p, "\r\nSec-WebSocket-Protocol: "...)
+		p = append(p, subProtocol...)
+	}
+	p = append(p, "\r\n\r\n"...)
+
+	if _, err = netConn.Write(p); err != nil {
 		netConn.Close()
 		return nil, err
 	}
 
-	return newConn(netConn, true, readBufSize, writeBufSize), nil
+	return c, nil
 }

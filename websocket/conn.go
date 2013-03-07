@@ -58,7 +58,10 @@ const (
 	OpPong         = 10
 )
 
-var ErrCloseSent = errors.New("websocket: close sent")
+var (
+	ErrCloseSent = errors.New("websocket: close sent")
+	ErrReadLimit = errors.New("websocket: read limit exceeded")
+)
 
 var (
 	errBadWriteOpCode      = errors.New("websocket: bad write opcode")
@@ -106,14 +109,16 @@ type Conn struct {
 	writeDeadline time.Time
 
 	// Read fields
-	readErr     error
-	br          *bufio.Reader
-	readLength  int64 // bytes remaining in current frame.
-	readFinal   bool  // true the current message has more frames.
-	readSeq     int   // incremented to invalidate message readers.
-	readMaskPos int
-	readMaskKey [4]byte
-	savedPong   []byte
+	readErr       error
+	br            *bufio.Reader
+	readRemaining int64 // bytes remaining in current frame.
+	readFinal     bool  // true the current message has more frames.
+	readSeq       int   // incremented to invalidate message readers.
+	readLength    int64 // Message size.
+	readLimit     int64 // Maximum message size.
+	readMaskPos   int
+	readMaskKey   [4]byte
+	savedPong     []byte
 }
 
 func newConn(conn net.Conn, isServer bool, readBufSize, writeBufSize int) *Conn {
@@ -175,8 +180,14 @@ func (c *Conn) WriteControl(opCode int, data []byte, deadline time.Time) error {
 		return errInvalidControlFrame
 	}
 
+	b0 := byte(opCode) | finalBit
+	b1 := byte(len(data))
+	if !c.isServer {
+		b1 |= maskBit
+	}
+
 	buf := make([]byte, 0, maxFrameHeaderSize+maxControlFramePayloadSize)
-	buf = append(buf, finalBit|byte(opCode), byte(len(data)))
+	buf = append(buf, b0, b1)
 
 	if c.isServer {
 		buf = append(buf, data...)
@@ -295,8 +306,8 @@ func (c *Conn) flushFrame(final bool, extra []byte) error {
 		copy(c.writeBuf[maxFrameHeaderSize-4:], key[:])
 		maskBytes(key, 0, c.writeBuf[maxFrameHeaderSize:c.writePos])
 		if len(extra) > 0 {
-			// Writer should use buffer in client mode.
-			panic("unexpected flush data")
+			c.writeErr = errors.New("websocket: internal error, extra used in client mode")
+			return c.writeErr
 		}
 	}
 
@@ -459,8 +470,8 @@ func (c *Conn) advanceFrame() (int, error) {
 
 	// 1. Skip remainder of previous frame.
 
-	if c.readLength > 0 {
-		if _, err := io.CopyN(ioutil.Discard, c.br, c.readLength); err != nil {
+	if c.readRemaining > 0 {
+		if _, err := io.CopyN(ioutil.Discard, c.br, c.readRemaining); err != nil {
 			return -1, err
 		}
 	}
@@ -476,7 +487,7 @@ func (c *Conn) advanceFrame() (int, error) {
 	opCode := int(b[0] & 0xf)
 	reserved := int((b[0] >> 4) & 0x7)
 	mask := b[1]&maskBit != 0
-	c.readLength = int64(b[1] & 0x7f)
+	c.readRemaining = int64(b[1] & 0x7f)
 
 	if reserved != 0 {
 		return -1, c.handleProtocolError("unexpected reserved bits " + strconv.Itoa(reserved))
@@ -484,7 +495,7 @@ func (c *Conn) advanceFrame() (int, error) {
 
 	switch opCode {
 	case OpClose, OpPing, OpPong:
-		if c.readLength > maxControlFramePayloadSize {
+		if c.readRemaining > maxControlFramePayloadSize {
 			return -1, c.handleProtocolError("control frame length > 125")
 		}
 		if !final {
@@ -506,17 +517,17 @@ func (c *Conn) advanceFrame() (int, error) {
 
 	// 3. Read and parse frame length.
 
-	switch c.readLength {
+	switch c.readRemaining {
 	case 126:
 		if err := c.read(b[:2]); err != nil {
 			return -1, err
 		}
-		c.readLength = int64(binary.BigEndian.Uint16(b[:2]))
+		c.readRemaining = int64(binary.BigEndian.Uint16(b[:2]))
 	case 127:
 		if err := c.read(b[:8]); err != nil {
 			return -1, err
 		}
-		c.readLength = int64(binary.BigEndian.Uint64(b[:8]))
+		c.readRemaining = int64(binary.BigEndian.Uint64(b[:8]))
 	}
 
 	// 4. Handle frame masking.
@@ -532,16 +543,23 @@ func (c *Conn) advanceFrame() (int, error) {
 		}
 	}
 
-	// 5. Return if not handling a control frame.
+	// 5. For text and binary messages, enforce read limit and return.
 
 	if opCode == OpContinuation || opCode == OpText || opCode == OpBinary {
+
+		c.readLength += c.readRemaining
+		if c.readLimit > 0 && c.readLength > c.readLimit {
+			c.WriteControl(OpClose, FormatCloseMessage(CloseMessageTooBig, ""), time.Now().Add(writeWait))
+			return -1, ErrReadLimit
+		}
+
 		return opCode, nil
 	}
 
 	// 6. Read control frame payload.
 
-	payload := make([]byte, c.readLength)
-	c.readLength = 0
+	payload := make([]byte, c.readRemaining)
+	c.readRemaining = 0
 	if err := c.read(payload); err != nil {
 		return -1, err
 	}
@@ -609,6 +627,7 @@ func (c *Conn) read(buf []byte) error {
 func (c *Conn) NextReader() (opCode int, r io.Reader, err error) {
 
 	c.readSeq += 1
+	c.readLength = 0
 
 	if c.savedPong != nil {
 		r := bytes.NewReader(c.savedPong)
@@ -627,7 +646,7 @@ func (c *Conn) NextReader() (opCode int, r io.Reader, err error) {
 			c.savedPong = nil
 			return OpPong, r, nil
 		case OpContinuation:
-			panic("unexpected continuation")
+			// do nothing
 		}
 	}
 	return -1, nil, c.readErr
@@ -646,13 +665,13 @@ func (r messageReader) Read(b []byte) (n int, err error) {
 
 	for r.c.readErr == nil {
 
-		if r.c.readLength > 0 {
-			if int64(len(b)) > r.c.readLength {
-				b = b[:r.c.readLength]
+		if r.c.readRemaining > 0 {
+			if int64(len(b)) > r.c.readRemaining {
+				b = b[:r.c.readRemaining]
 			}
 			r.c.readErr = r.c.read(b)
 			r.c.readMaskPos = maskBytes(r.c.readMaskKey, r.c.readMaskPos, b)
-			r.c.readLength -= int64(len(b))
+			r.c.readRemaining -= int64(len(b))
 			return len(b), r.c.readErr
 		}
 
@@ -665,7 +684,7 @@ func (r messageReader) Read(b []byte) (n int, err error) {
 		opCode, r.c.readErr = r.c.advanceFrame()
 
 		if opCode == OpText || opCode == OpBinary {
-			panic("unexpected text or binary frame")
+			r.c.readErr = errors.New("websocket: internal error, unexpected text or binary in Reader")
 		}
 	}
 	return 0, r.c.readErr
@@ -677,6 +696,13 @@ func (r messageReader) Read(b []byte) (n int, err error) {
 // the methods will not time out.
 func (c *Conn) SetReadDeadline(t time.Time) error {
 	return c.conn.SetReadDeadline(t)
+}
+
+// SetReadLimit sets the maximum size for a message read from the peer. If a
+// message exceeds the limit, the connection sends a close frame to the peer
+// and returns ErrReadLimit to the application.
+func (c *Conn) SetReadLimit(limit int64) {
+	c.readLimit = limit
 }
 
 // FormatCloseMessage formats closeCode and text as a WebSocket close message.
