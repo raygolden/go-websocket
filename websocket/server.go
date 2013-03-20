@@ -16,15 +16,8 @@ package websocket
 
 import (
 	"bufio"
-	"crypto/sha1"
-	"encoding/base64"
 	"errors"
 	"net"
-	"strings"
-)
-
-var (
-	keyGUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
 )
 
 // HandeshakeError describes an error with the handshake from the peer.
@@ -33,19 +26,6 @@ type HandshakeError struct {
 }
 
 func (e HandshakeError) Error() string { return e.Err }
-
-// tokenListContainsValue returns true if the 1#token header with the given
-// name contains token.
-func tokenListContainsValue(header map[string][]string, name string, value string) bool {
-	for _, v := range header[name] {
-		for _, s := range strings.Split(v, ",") {
-			if strings.EqualFold(value, strings.TrimSpace(s)) {
-				return true
-			}
-		}
-	}
-	return false
-}
 
 // Upgrade upgrades the HTTP server connection to the WebSocket protocol. The
 // resp argument is any object that supports the http.Hijack interface
@@ -76,11 +56,11 @@ func Upgrade(resp interface{}, requestHeader map[string][]string, subProtocol st
 		return nil, HandshakeError{"websocket: upgrade != websocket"}
 	}
 
-	var key string
+	var challengeKey string
 	if values := requestHeader["Sec-Websocket-Key"]; len(values) == 0 || values[0] == "" {
 		return nil, HandshakeError{"websocket: key missing or blank"}
 	} else {
-		key = values[0]
+		challengeKey = values[0]
 	}
 
 	var (
@@ -112,15 +92,9 @@ func Upgrade(resp interface{}, requestHeader map[string][]string, subProtocol st
 
 	c := newConn(netConn, true, readBufSize, writeBufSize)
 
-	h := sha1.New()
-	h.Write([]byte(key))
-	h.Write(keyGUID)
-	acceptKey := make([]byte, base64.StdEncoding.EncodedLen(sha1.Size))
-	base64.StdEncoding.Encode(acceptKey, h.Sum(nil))
-
 	p := c.writeBuf[:0]
 	p = append(p, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "...)
-	p = append(p, acceptKey...)
+	p = append(p, computeAcceptKey(challengeKey)...)
 	if subProtocol != "" {
 		p = append(p, "\r\nSec-WebSocket-Protocol: "...)
 		p = append(p, subProtocol...)

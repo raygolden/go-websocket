@@ -38,7 +38,7 @@ func NewClient(netConn net.Conn, u *url.URL, header http.Header, readBufSize, wr
 	p = append(p, u.RequestURI()...)
 	p = append(p, " HTTP/1.1\r\nHost: "...)
 	p = append(p, u.Host...)
-	p = append(p, "\r\nUpgrade: websocket\r\nConnection: upgrade\r\nSec-WebSocketVersion: 13\r\nSec-WebSocket-Key: "...)
+	p = append(p, "\r\nUpgrade: websocket\r\nConnection: upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: "...)
 	p = append(p, challengeKey...)
 	p = append(p, "\r\n"...)
 	for k, vs := range header {
@@ -60,9 +60,9 @@ func NewClient(netConn net.Conn, u *url.URL, header http.Header, readBufSize, wr
 		return nil, "", err
 	}
 	if resp.StatusCode != 101 ||
-		strings.ToLower(resp.Header.Get("Upgrade")) != "websocket" ||
-		strings.ToLower(resp.Header.Get("Connection")) != "upgrade" ||
-		resp.Header.Get("Sec-WebSocket-Accept") != acceptKey {
+		!strings.EqualFold(resp.Header.Get("Upgrade"), "websocket") ||
+		!strings.EqualFold(resp.Header.Get("Connection"), "upgrade") ||
+		resp.Header.Get("Sec-Websocket-Accept") != acceptKey {
 		return nil, "", errors.New("websocket: bad handshake")
 	}
 	return c, resp.Header.Get("Sec-WebSocket-Protocol"), nil
