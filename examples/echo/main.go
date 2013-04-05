@@ -9,7 +9,7 @@ import (
 )
 
 func echo(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Upgrade(w, r.Header, "", 1024, 1024)
+	conn, err := websocket.Upgrade(w, r.Header, nil, 1024, 1024)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
 		return

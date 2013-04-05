@@ -28,7 +28,7 @@ import (
 
 // echoCopy echoes messages from the client using io.Copy.
 func echoCopy(w http.ResponseWriter, r *http.Request, writerOnly bool) {
-	conn, err := websocket.Upgrade(w, r.Header, "", 4096, 4096)
+	conn, err := websocket.Upgrade(w, r.Header, nil, 4096, 4096)
 	if err != nil {
 		log.Println("Upgrade:", err)
 		http.Error(w, "Bad request", 400)
@@ -90,7 +90,7 @@ func echoCopyFull(w http.ResponseWriter, r *http.Request) {
 // echoReadAll echoes messages from the client by reading the entire message
 // with ioutil.ReadAll.
 func echoReadAll(w http.ResponseWriter, r *http.Request, writeMessage bool) {
-	conn, err := websocket.Upgrade(w, r.Header, "", 4096, 4096)
+	conn, err := websocket.Upgrade(w, r.Header, nil, 4096, 4096)
 	if err != nil {
 		log.Println("Upgrade:", err)
 		http.Error(w, "Bad request", 400)

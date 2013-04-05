@@ -98,7 +98,7 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Origin not allowed", 403)
 		return
 	}
-	ws, err := websocket.Upgrade(w, r.Header, "", 1024, 1024)
+	ws, err := websocket.Upgrade(w, r.Header, nil, 1024, 1024)
 	if _, ok := err.(websocket.HandshakeError); ok {
 		http.Error(w, "Not a websocket handshake", 400)
 		return

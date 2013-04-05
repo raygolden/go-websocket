@@ -23,12 +23,14 @@ import (
 )
 
 // NewClient creates a new client connection using the given net connection.
-// The URL u specifies the host and request URI. The header specifies optional
-// Origin, Sec-WebSocket-Protocol and Cookie headers.
-func NewClient(netConn net.Conn, u *url.URL, header http.Header, readBufSize, writeBufSize int) (c *Conn, subprotocol string, err error) {
+// The URL u specifies the host and request URI. Use requestHeader to sepcify
+// the origin (Origin), subprotocols (Set-WebSocket-Protocol) and cookies
+// (Cookie). Use the response.Header to get the selected subprotocol
+// (Sec-WebSocket-Protocol) and cookies (Set-Cookie).
+func NewClient(netConn net.Conn, u *url.URL, requestHeader http.Header, readBufSize, writeBufSize int) (c *Conn, response *http.Response, err error) {
 	challengeKey, err := generateChallengeKey()
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	acceptKey := computeAcceptKey(challengeKey)
 
@@ -41,7 +43,7 @@ func NewClient(netConn net.Conn, u *url.URL, header http.Header, readBufSize, wr
 	p = append(p, "\r\nUpgrade: websocket\r\nConnection: upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: "...)
 	p = append(p, challengeKey...)
 	p = append(p, "\r\n"...)
-	for k, vs := range header {
+	for k, vs := range requestHeader {
 		for _, v := range vs {
 			p = append(p, k...)
 			p = append(p, ": "...)
@@ -52,18 +54,18 @@ func NewClient(netConn net.Conn, u *url.URL, header http.Header, readBufSize, wr
 	p = append(p, "\r\n"...)
 
 	if _, err := netConn.Write(p); err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 
-	resp, err := http.ReadResponse(c.br, &http.Request{Method: "GET"})
+	resp, err := http.ReadResponse(c.br, &http.Request{Method: "GET", URL: u})
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	if resp.StatusCode != 101 ||
 		!strings.EqualFold(resp.Header.Get("Upgrade"), "websocket") ||
 		!strings.EqualFold(resp.Header.Get("Connection"), "upgrade") ||
 		resp.Header.Get("Sec-Websocket-Accept") != acceptKey {
-		return nil, "", errors.New("websocket: bad handshake")
+		return nil, nil, errors.New("websocket: bad handshake")
 	}
-	return c, resp.Header.Get("Sec-WebSocket-Protocol"), nil
+	return c, resp, nil
 }

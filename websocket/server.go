@@ -42,7 +42,10 @@ func (e HandshakeError) Error() string { return e.Err }
 //		http.Error(w, "Origin not allowed", 403)
 //		return
 //	}
-func Upgrade(resp interface{}, requestHeader map[string][]string, subProtocol string, readBufSize, writeBufSize int) (*Conn, error) {
+//
+// Use the responseHeader to specify cookies (Set-Cookie) and the subprootocol
+// (Sec-WebSocket-Protocol).
+func Upgrade(resp interface{}, requestHeader, responseHeader map[string][]string, readBufSize, writeBufSize int) (*Conn, error) {
 
 	if values := requestHeader["Sec-Websocket-Version"]; len(values) == 0 || values[0] != "13" {
 		return nil, HandshakeError{"websocket: version != 13"}
@@ -95,11 +98,23 @@ func Upgrade(resp interface{}, requestHeader map[string][]string, subProtocol st
 	p := c.writeBuf[:0]
 	p = append(p, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "...)
 	p = append(p, computeAcceptKey(challengeKey)...)
-	if subProtocol != "" {
-		p = append(p, "\r\nSec-WebSocket-Protocol: "...)
-		p = append(p, subProtocol...)
+	p = append(p, "\r\n"...)
+	for k, vs := range responseHeader {
+		for _, v := range vs {
+			p = append(p, k...)
+			p = append(p, ": "...)
+			for i := 0; i < len(v); i++ {
+				b := v[i]
+				if b <= 31 {
+					// prevent response splitting.
+					b = ' '
+				}
+				p = append(p, b)
+			}
+			p = append(p, "\r\n"...)
+		}
 	}
-	p = append(p, "\r\n\r\n"...)
+	p = append(p, "\r\n"...)
 
 	if _, err = netConn.Write(p); err != nil {
 		netConn.Close()
