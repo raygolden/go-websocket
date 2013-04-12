@@ -43,7 +43,7 @@ func (e HandshakeError) Error() string { return e.Err }
 //		return
 //	}
 //
-// Use the responseHeader to specify cookies (Set-Cookie) and the subprootocol
+// Use the responseHeader to specify cookies (Set-Cookie) and the subprotocol
 // (Sec-WebSocket-Protocol).
 func Upgrade(resp interface{}, requestHeader, responseHeader map[string][]string, readBufSize, writeBufSize int) (*Conn, error) {
 
