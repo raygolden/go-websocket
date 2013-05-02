@@ -20,6 +20,11 @@ subdirectory](https://github.com/garyburd/go-websocket/tree/master/test).
 
 Go-WebSocket is available under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.html).
 
+## Related packages
+
+The [gowebsocket](https://github.com/zhangpeihao/gowebsocket) package wraps the
+websocket.Conn type with an implementation of the net.Conn interface. 
+
 ## Go-WebSocket compared with other packages
 
 <table>

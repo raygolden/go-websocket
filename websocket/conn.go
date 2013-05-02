@@ -142,6 +142,16 @@ func (c *Conn) Close() error {
 	return c.conn.Close()
 }
 
+// LocalAddr returns the local network address.
+func (c *Conn) LocalAddr() net.Addr {
+	return c.conn.LocalAddr()
+}
+
+// RemoteAddr returns the remote network address.
+func (c *Conn) RemoteAddr() net.Addr {
+	return c.conn.RemoteAddr()
+}
+
 // Write methods
 
 func (c *Conn) write(opCode int, deadline time.Time, bufs ...[]byte) error {
