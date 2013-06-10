@@ -14,9 +14,52 @@
 
 // Package websocket implements the WebSocket protocol defined in RFC 6455.
 //
-// The websocket package passes UTF-8 text to and from the network without
-// validation. It is the application's responsibility to validate the contents
-// of text messages.
+// Overview
+//
+// The Conn type represents a WebSocket connection. WebSocket messages are
+// represented by the io.Reader interface when receiving a message and by the
+// io.WriteCloser interface when sending a message. An application receives a
+// message by calling the Conn.NextReader method and reading the returned
+// io.Reader to EOF. An application sends a message by calling the
+// Conn.NextWriter method and writing the message to the returned
+// io.WriteCloser. The application terminates the message by closing the
+// io.WriteCloser.
+//
+// The following example shows how to use NextReader and NextWriter to echo
+// messages:
+//
+//	for {
+//      op, r, err := conn.NextReader()
+//      if err != nil {
+//			return
+//      }
+//		if op != websocket.OpBinary && op != websocket.OpText {
+//          // Ignore if not a data message.
+//			continue
+//		}
+//		w, err := conn.NextWriter(op)
+//		if err != nil {
+//			return err
+//		}
+//		if _, err := io.Copy(w, r); err != nil {
+//          return err
+//      }
+//      if err := w.Close(); err != nil {
+//          return err
+//      }
+//	}
+//
+// Concurrency
+//
+// A Conn supports a single concurrent caller to the write methods (NextWriter,
+// SetWriteDeadline, WriteMessage) and a single concurrent caller to the read
+// methods (NextReader, SetReadDeadline). The Close and WriteControl methods
+// can be called concurrently with all other methods.
+//
+// Text
+//
+// Text messages in the WebSocket protocol are transmitted as UTF-8. It is the
+// application's responsibility to ensure that text messages are valid UTF-8.
 package websocket
 
 import (
